@@ -361,30 +361,54 @@ int vcamfb_init(struct vcam_device *dev)
     unsigned int size;
     int ret;
 
-    /* malloc vcamfb_info */
+    /*
+    // malloc vcamfb_info 
     fb_data = vmalloc(sizeof(struct vcamfb_info));
     dev->fb_priv = (void *) fb_data;
 
-    /* malloc fb_info */
+    // malloc fb_info 
     fb_data->info = framebuffer_alloc(0, &dev->vdev.dev);
     info = fb_data->info;
 
-    /* malloc framebuffer and init framebuffer */
+    // malloc framebuffer and init framebuffer
     size = dev->input_format.sizeimage * 2;
     if (!(fb_data->addr = vmalloc(size)))
         return -ENOMEM;
+    */
+
+    fb_data = vzalloc(sizeof(*fb_data));
+    if (!fb_data)
+        return -ENOMEM;
+
+    dev->fb_priv = fb_data;
+
+    fb_data->info = framebuffer_alloc(0, &dev->vdev.dev);
+    if (!fb_data->info) {
+        ret = -ENOMEM;
+        goto err_fb_data;
+    }
+
+    info = fb_data->info;
+
+    size = dev->input_format.sizeimage * 2;
+    fb_data->addr = vmalloc(size);
+    if (!fb_data->addr) {
+        ret = -ENOMEM;
+        goto err_fb_info;
+    }
+
     fb_data->offset = dev->input_format.sizeimage;
-    q->buffers[0].data = fb_data->addr;
+    // q->buffers[0].data = fb_data->addr;
     q->buffers[0].filled = 0;
     q->buffers[0].xbar = 0;
     q->buffers[0].ybar = 0;
-    q->buffers[1].data = (void *) (fb_data->addr + fb_data->offset);
+    // q->buffers[1].data = (void *) (fb_data->addr + fb_data->offset);
     q->buffers[1].filled = 0;
     q->buffers[1].xbar = 0;
     q->buffers[1].ybar = 0;
     memset(&q->dummy, 0, sizeof(struct vcam_in_buffer));
-    q->pending = &q->buffers[0];
-    q->ready = &q->buffers[1];
+    // q->pending = &q->buffers[0];
+    // q->ready = &q->buffers[1];
 
     /* set the fb_fix */
     vfb_fix.smem_len = dev->input_format.sizeimage;
@@ -414,6 +438,7 @@ int vcamfb_init(struct vcam_device *dev)
     info->cmap.blue = NULL;
     info->cmap.transp = NULL;
 
+    /*
     if (fb_alloc_cmap(&info->cmap, 256, 0)) {
         pr_err("Failed to allocate cmap!");
         return -ENOMEM;
@@ -422,16 +447,48 @@ int vcamfb_init(struct vcam_device *dev)
     ret = register_framebuffer(info);
     if (ret < 0)
         goto fb_alloc_failure;
-
+    
     snprintf(fb_data->name, sizeof(fb_data->name), "fb%d",
              MINOR(info->dev->devt));
 
     return 0;
+    */
+   
+    ret = fb_alloc_cmap(&info->cmap, 256, 0);
+    if (ret) {
+        pr_err("Failed to allocate cmap!");
+        goto err_fb_addr;
+    }
 
-fb_alloc_failure:
-    fb_dealloc_cmap(&info->cmap);
-    framebuffer_release(info);
-    return -EINVAL;
+    ret = register_framebuffer(info);
+    if (ret < 0)
+        goto err_cmap;
+
+    snprintf(fb_data->name, sizeof(fb_data->name), "fb%d",
+            MINOR(info->dev->devt));
+
+    return 0;
+
+    err_cmap:
+        fb_dealloc_cmap(&info->cmap);
+
+    err_fb_addr:
+        vfree(fb_data->addr);
+
+    err_fb_info:
+        framebuffer_release(info);
+
+    err_fb_data:
+        dev->fb_priv = NULL;
+        vfree(fb_data);
+        return ret;
+
+    
+
+// fb_alloc_failure:
+//     fb_dealloc_cmap(&info->cmap);
+//     framebuffer_release(info);
+//     return -EINVAL;
 }
 
 void vcamfb_destroy(struct vcam_device *dev)
@@ -445,12 +502,17 @@ void vcamfb_destroy(struct vcam_device *dev)
     info = fb_data->info;
     if (info) {
         unregister_framebuffer(info);
+
+        rcu_barrier();   // 先加這行做對照實驗
+
         fb_dealloc_cmap(&info->cmap);
         framebuffer_release(info);
     }
 
     vfree(fb_data->addr);
     vfree(fb_data);
+
+    dev->fb_priv = NULL;   // 加這行
 }
 
 void vcamfb_update(struct vcam_device *dev)
@@ -466,8 +528,8 @@ void vcamfb_update(struct vcam_device *dev)
         fb_data->offset = dev->input_format.sizeimage;
         size = dev->input_format.sizeimage * 2;
         fb_data->addr = vmalloc(size);
-        q->buffers[0].data = fb_data->addr;
-        q->buffers[1].data = (void *) (fb_data->addr + fb_data->offset);
+        // q->buffers[0].data = fb_data->addr;
+        // q->buffers[1].data = (void *) (fb_data->addr + fb_data->offset);
         q->buffers[0].filled = 0;
         q->buffers[0].xbar = 0;
         q->buffers[0].ybar = 0;

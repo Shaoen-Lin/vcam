@@ -9,4 +9,7 @@ void destroy_control_device(void);
 /* request new virtual camera device */
 int request_vcam_device(struct vcam_device_spec *dev_spec);
 
+struct vcam_device;
+struct vcam_device *get_vcam_device(size_t idx);
+
 #endif

@@ -11,10 +11,14 @@
 #include "fb.h"
 #include "videobuf.h"
 
+#include <linux/vmalloc.h>
+
 extern const char *vcam_dev_name;
 extern unsigned char allow_pix_conversion;
 extern unsigned char allow_scaling;
 extern unsigned char allow_cropping;
+
+extern bool enable_fbdev;
 
 struct __attribute__((__packed__)) rgb_struct {
     unsigned char r, g, b;
@@ -669,6 +673,7 @@ int submitter_thread(void *data)
     struct vcam_device *dev = (struct vcam_device *) data;
     struct vcam_out_queue *q = &dev->vcam_out_vidq;
     struct vcam_in_queue *in_q = &dev->in_queue;
+    
 
     while (!kthread_should_stop()) {
         struct vcam_out_buffer *buf;
@@ -686,19 +691,36 @@ int submitter_thread(void *data)
         list_del(&buf->list);
         spin_unlock_irqrestore(&dev->out_q_slock, flags);
 
-        if (!dev->fb_isopen) {
-            submit_noinput_buffer(buf, dev);
-        } else {
-            struct vcam_in_buffer *in_buf;
-            spin_lock_irqsave(&dev->in_q_slock, flags);
-            in_buf = in_q->ready;
-            if (!in_buf) {
-                pr_err("Ready buffer in input queue has NULL pointer\n");
-                goto unlock_and_continue;
-            }
+        // if (!dev->fb_isopen) {
+        //     submit_noinput_buffer(buf, dev);
+        // } else {
+        //     struct vcam_in_buffer *in_buf;
+        //     spin_lock_irqsave(&dev->in_q_slock, flags);
+        //     in_buf = in_q->ready;
+        //     if (!in_buf) {
+        //         pr_err("Ready buffer in input queue has NULL pointer\n");
+        //         goto unlock_and_continue;
+        //     }
+        //     submit_copy_buffer(buf, in_buf, dev);
+        // unlock_and_continue:
+        //     spin_unlock_irqrestore(&dev->in_q_slock, flags);
+        // }
+
+        struct vcam_in_buffer *in_buf;
+        bool has_input = false;
+
+        spin_lock_irqsave(&dev->in_q_slock, flags);
+
+        in_buf = in_q->ready;
+        if (in_buf && in_buf->data && in_buf->filled > 0)
+            has_input = true;
+
+        if (has_input) {
             submit_copy_buffer(buf, in_buf, dev);
-        unlock_and_continue:
             spin_unlock_irqrestore(&dev->in_q_slock, flags);
+        } else {
+            spin_unlock_irqrestore(&dev->in_q_slock, flags);
+            submit_noinput_buffer(buf, dev);
         }
 
     have_a_nap:
@@ -725,6 +747,140 @@ int submitter_thread(void *data)
             schedule_timeout_interruptible(timeout - computation_time_jiff);
         }
     }
+
+    return 0;
+}
+
+int vcam_input_buffers_init(struct vcam_device *dev)
+{
+    struct vcam_in_queue *q;
+    size_t frame_size;
+
+    if (!dev)
+        return -EINVAL;
+
+    q = &dev->in_queue;
+    if (q->storage)
+        return 0;
+
+    frame_size = dev->input_format.sizeimage;
+    if (!frame_size)
+        frame_size = dev->fb_spec.width * dev->fb_spec.height * 3;
+
+    q->frame_size = frame_size;
+    q->storage_size = frame_size * 2;
+    q->storage = vmalloc(q->storage_size);
+    if (!q->storage)
+        return -ENOMEM;
+
+    memset(q->storage, 0, q->storage_size);
+
+    q->buffers[0].data = q->storage;
+    q->buffers[1].data = (char *)q->storage + frame_size;
+
+    q->buffers[0].filled = 0;
+    q->buffers[1].filled = 0;
+
+    q->pending = &q->buffers[0];
+    q->ready = &q->buffers[1];
+
+    return 0;
+}
+
+void vcam_input_buffers_destroy(struct vcam_device *dev)
+{
+    struct vcam_in_queue *q;
+
+    if (!dev)
+        return;
+
+    q = &dev->in_queue;
+
+    if (q->storage)
+        vfree(q->storage);
+
+    q->storage = NULL;
+    q->frame_size = 0;
+    q->storage_size = 0;
+
+    q->buffers[0].data = NULL;
+    q->buffers[1].data = NULL;
+    q->buffers[0].filled = 0;
+    q->buffers[1].filled = 0;
+
+    q->pending = NULL;
+    q->ready = NULL;
+}
+
+int vcam_submit_xrgb8888_frame(struct vcam_device *dev,
+                               const void *src,
+                               unsigned int width,
+                               unsigned int height,
+                               unsigned int pitch)
+{
+    struct vcam_in_queue *q;
+    struct vcam_in_buffer *buf;
+    unsigned long flags = 0;
+    unsigned int x, y;
+    unsigned int dst_width, dst_height;
+    unsigned int dst_stride;
+    size_t frame_size;
+    unsigned char *dst;
+    const unsigned char *src_base = src;
+
+    if (!dev || !src)
+        return -EINVAL;
+
+    dst_width = dev->fb_spec.width;
+    dst_height = dev->fb_spec.height;
+    dst_stride = dst_width * 3;
+    frame_size = dst_stride * dst_height;
+
+    if (width < dst_width)
+        dst_width = width;
+    if (height < dst_height)
+        dst_height = height;
+
+    q = &dev->in_queue;
+
+    spin_lock_irqsave(&dev->in_q_slock, flags);
+
+    buf = q->pending;
+    if (!buf || !buf->data) {
+        spin_unlock_irqrestore(&dev->in_q_slock, flags);
+        return -EINVAL;
+    }
+
+    dst = buf->data;
+    memset(dst, 0, frame_size);
+
+    for (y = 0; y < dst_height; y++) {
+        const unsigned char *src_row = src_base + y * pitch;
+        unsigned char *dst_row = dst + y * (dev->fb_spec.width * 3);
+
+        for (x = 0; x < dst_width; x++) {
+            const unsigned char *s = src_row + x * 4;
+            unsigned char *d = dst_row + x * 3;
+
+            d[0] = s[2];  /* R */
+            d[1] = s[1];  /* G */
+            d[2] = s[0];  /* B */
+        }
+    }
+
+    buf->filled = frame_size;
+    buf->xbar = 0;
+    buf->ybar = 0;
+    buf->jiffies = jiffies;
+
+    q->ready = buf;
+    q->pending = (q->pending == &q->buffers[0]) ?
+                 &q->buffers[1] : &q->buffers[0];
+
+    spin_unlock_irqrestore(&dev->in_q_slock, flags);
+
+    // pr_info("my_vcam: submit XRGB8888 -> RGB24 success size=%zu\n",
+            // frame_size);
 
     return 0;
 }
@@ -859,11 +1015,22 @@ struct vcam_device *create_vcam_device(size_t idx,
 
     vcam->sub_thr_id = NULL;
 
+    ret = vcam_input_buffers_init(vcam);
+    if (ret) {
+        pr_err("failed to initialize input buffers\n");
+        goto input_buffer_init_failed;
+    }
+
     /* Initialize framebuffer */
-    ret = vcamfb_init(vcam);
-    if (ret < 0) {
-        pr_err("Failed to initialize vcamfb\n");
-        goto vcamfb_failure;
+    if (enable_fbdev) {
+        ret = vcamfb_init(vcam);
+        if (ret < 0) {
+            pr_err("Failed to initialize vcamfb\n");
+            goto vcamfb_failure;
+        }
+    } else {
+        vcam->fb_priv = NULL;
+        pr_info("fbdev disabled, using DRM input only\n");
     }
     vcam->fb_isopen = 0;
 
@@ -874,6 +1041,7 @@ struct vcam_device *create_vcam_device(size_t idx,
 
 vcamfb_failure:
     vcamfb_destroy(vcam);
+input_buffer_init_failed:
 video_regdev_failure:
     video_unregister_device(&vcam->vdev);
     video_device_release(&vcam->vdev);
@@ -883,6 +1051,7 @@ v4l2_registration_failure:
     kfree(vcam);
 vcam_alloc_failure:
     return NULL;
+
 }
 
 int modify_vcam_device(struct vcam_device *vcam,
@@ -910,7 +1079,11 @@ int modify_vcam_device(struct vcam_device *vcam,
     }
     vcam->fb_spec = *dev_spec;
     fill_v4l2pixfmt(&vcam->input_format, dev_spec);
-    vcamfb_update(vcam);
+    // vcamfb_update(vcam);
+
+    if (vcam->fb_priv)
+        vcamfb_update(vcam);
+
     vcam->output_format = vcam->input_format;
 
     spin_lock_irqsave(&vcam->in_fh_slock, flags);
@@ -930,9 +1103,15 @@ void destroy_vcam_device(struct vcam_device *vcam)
 
     if (vcam->sub_thr_id)
         kthread_stop(vcam->sub_thr_id);
-    vcamfb_destroy(vcam);
+    if (vcam->fb_priv)    
+        vcamfb_destroy(vcam);
+
+    vcam_input_buffers_destroy(vcam);
     mutex_destroy(&vcam->vcam_mutex);
     video_unregister_device(&vcam->vdev);
+
+    rcu_barrier();   // 加這行做對照實驗
+
     v4l2_device_unregister(&vcam->v4l2_dev);
 
     kfree(vcam);

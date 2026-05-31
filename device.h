@@ -32,6 +32,10 @@ struct vcam_in_queue {
     struct vcam_in_buffer dummy;
     struct vcam_in_buffer *pending;
     struct vcam_in_buffer *ready;
+
+    void *storage;
+    size_t frame_size;
+    size_t storage_size;
 };
 
 struct vcam_out_buffer {
@@ -105,5 +109,17 @@ int modify_vcam_device(struct vcam_device *vcam,
 void destroy_vcam_device(struct vcam_device *vcam);
 
 int submitter_thread(void *data);
+
+int vcam_submit_frame(struct vcam_device *dev, const void *src, size_t size);
+
+int vcam_submit_xrgb8888_frame(struct vcam_device *dev,
+                               const void *src,
+                               unsigned int width,
+                               unsigned int height,
+                               unsigned int pitch);
+
+int vcam_input_buffers_init(struct vcam_device *dev);
+
+void vcam_input_buffers_destroy(struct vcam_device *dev);
 
 #endif

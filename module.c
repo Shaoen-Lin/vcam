@@ -1,7 +1,9 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/types.h>
 
+#include "drm.h" 
 #include "control.h"
 
 MODULE_LICENSE("Dual MIT/GPL");
@@ -36,22 +38,56 @@ MODULE_PARM_DESC(allow_cropping, "Allow image cropping by default\n");
 
 const char *vcam_dev_name = VCAM_DEV_NAME;
 
+bool enable_fbdev = true;
+module_param(enable_fbdev, bool, 0644);
+MODULE_PARM_DESC(enable_fbdev, "Enable legacy fbdev input");
+
+// static int __init vcam_init(void)
+// {
+//     int i;
+//     int ret = create_control_device(CONTROL_DEV_NAME);
+//     if (ret)
+//         goto failure;
+
+//     for (i = 0; i < create_devices; i++)
+//         request_vcam_device(NULL);
+
+//     pr_info("my_vcam optimized version loaded\n");
+
+// failure:
+//     return ret;
+// }
+
 static int __init vcam_init(void)
 {
     int i;
-    int ret = create_control_device(CONTROL_DEV_NAME);
+    int ret;
+
+    ret = create_control_device(CONTROL_DEV_NAME);
     if (ret)
-        goto failure;
+        return ret;
 
     for (i = 0; i < create_devices; i++)
         request_vcam_device(NULL);
 
-failure:
-    return ret;
+    ret = vcam_drm_init();
+    if (ret) {
+        destroy_control_device();
+        return ret;
+    }
+
+    pr_info("my_vcam optimized version loaded\n");
+    return 0;
 }
+
+// static void __exit vcam_exit(void)
+// {
+//     destroy_control_device();
+// }
 
 static void __exit vcam_exit(void)
 {
+    vcam_drm_exit();
     destroy_control_device();
 }
 

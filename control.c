@@ -6,6 +6,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/types.h>
 
 #include "control.h"
 #include "device.h"
@@ -26,6 +27,8 @@ struct control_device {
 };
 
 static struct control_device *ctldev = NULL;
+
+struct vcam_device *get_vcam_device(size_t idx);
 
 static int control_open(struct inode *inode, struct file *file)
 {
@@ -76,8 +79,19 @@ static int control_iocontrol_get_device(struct vcam_device_spec *dev_spec)
     dev_spec->mem_type = dev->fb_spec.mem_type;
     dev_spec->cropratio = dev->fb_spec.cropratio;
 
-    strncpy((char *) &dev_spec->fb_node, (const char *) vcamfb_get_devnode(dev),
-            sizeof(dev_spec->fb_node));
+    // strncpy((char *) &dev_spec->fb_node, (const char *) vcamfb_get_devnode(dev),
+    //         sizeof(dev_spec->fb_node));
+
+    if (dev->fb_priv) {
+        strncpy((char *)&dev_spec->fb_node,
+                (const char *)vcamfb_get_devnode(dev),
+                sizeof(dev_spec->fb_node));
+    } else {
+        snprintf((char *)&dev_spec->fb_node,
+                sizeof(dev_spec->fb_node),
+                "disabled");
+    }
+
     snprintf((char *) &dev_spec->video_node, sizeof(dev_spec->video_node),
              "/dev/video%d", dev->vdev.num);
     return 0;
@@ -313,11 +327,37 @@ class_create_failure:
 kmalloc_failure:
     return ret;
 }
-
+/*
 void __exit destroy_control_device(void)
 {
     if (ctldev) {
         free_control_device(ctldev);
         ctldev = NULL;
     }
+}
+*/
+void destroy_control_device(void)
+{
+    if (ctldev) {
+        free_control_device(ctldev);
+        ctldev = NULL;
+    }
+}
+
+struct vcam_device *get_vcam_device(size_t idx)
+{
+    struct vcam_device *dev = NULL;
+    unsigned long flags = 0;
+
+    if (!ctldev)
+        return NULL;
+
+    spin_lock_irqsave(&ctldev->vcam_devices_lock, flags);
+
+    if (idx < ctldev->vcam_device_count)
+        dev = ctldev->vcam_devices[idx];
+
+    spin_unlock_irqrestore(&ctldev->vcam_devices_lock, flags);
+
+    return dev;
 }
