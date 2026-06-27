@@ -9,6 +9,7 @@
 
 int main(void)
 {
+    int ret = 0;
     int fd;
     void *map;
     struct drm_mode_create_dumb create = {0};
@@ -60,6 +61,7 @@ int main(void)
     struct drm_vcam_submit submit = {0};
 
     submit.handle = create.handle;
+    submit.vcam_index = 0;
     submit.width = create.width;
     submit.height = create.height;
     submit.pitch = create.pitch;
@@ -83,7 +85,8 @@ int main(void)
 
         if (ioctl(fd, DRM_IOCTL_VCAM_SUBMIT, &submit) < 0) {
             perror("VCAM_SUBMIT");
-            break;
+            ret = 1;
+            goto out;
         }
 
         usleep(33000);
@@ -91,6 +94,7 @@ int main(void)
 
     printf("stream submit done\n");
 
+out:
     munmap(map, create.size);
 
     destroy.handle = create.handle;
@@ -98,5 +102,5 @@ int main(void)
         perror("DESTROY_DUMB");
 
     close(fd);
-    return 0;
+    return ret;
 }

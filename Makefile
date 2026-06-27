@@ -1,5 +1,5 @@
-obj-m := my_vcam.o
-my_vcam-objs := module.o control.o device.o videobuf.o fb.o drm.o
+obj-m := vcam.o
+vcam-objs := module.o control.o device.o videobuf.o fb.o drm.o kms.o
 
 CFLAGS_utils = -O2 -Wall -Wextra -pedantic -std=c99
 

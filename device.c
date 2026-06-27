@@ -822,7 +822,7 @@ int vcam_submit_xrgb8888_frame(struct vcam_device *dev,
     struct vcam_in_buffer *buf;
     unsigned long flags = 0;
     unsigned int x, y;
-    unsigned int dst_width, dst_height;
+    unsigned int copy_width, copy_height;
     unsigned int dst_stride;
     size_t frame_size;
     unsigned char *dst;
@@ -831,17 +831,21 @@ int vcam_submit_xrgb8888_frame(struct vcam_device *dev,
     if (!dev || !src)
         return -EINVAL;
 
-    dst_width = dev->fb_spec.width;
-    dst_height = dev->fb_spec.height;
-    dst_stride = dst_width * 3;
-    frame_size = dst_stride * dst_height;
-
-    if (width < dst_width)
-        dst_width = width;
-    if (height < dst_height)
-        dst_height = height;
-
     q = &dev->in_queue;
+
+    frame_size = dev->input_format.sizeimage;
+    if (!frame_size)
+        frame_size = dev->fb_spec.width * dev->fb_spec.height * 3;
+
+    dst_stride = dev->fb_spec.width * 3;
+
+    copy_width = dev->fb_spec.width;
+    copy_height = dev->fb_spec.height;
+
+    if (width < copy_width)
+        copy_width = width;
+    if (height < copy_height)
+        copy_height = height;
 
     spin_lock_irqsave(&dev->in_q_slock, flags);
 
@@ -851,22 +855,32 @@ int vcam_submit_xrgb8888_frame(struct vcam_device *dev,
         return -EINVAL;
     }
 
+    /*
+     * Detach the current pending buffer while we fill it.
+     * Do not hold the spinlock during the frame conversion.
+     */
+    q->pending = NULL;
+
+    spin_unlock_irqrestore(&dev->in_q_slock, flags);
+
     dst = buf->data;
     memset(dst, 0, frame_size);
 
-    for (y = 0; y < dst_height; y++) {
+    for (y = 0; y < copy_height; y++) {
         const unsigned char *src_row = src_base + y * pitch;
-        unsigned char *dst_row = dst + y * (dev->fb_spec.width * 3);
+        unsigned char *dst_row = dst + y * dst_stride;
 
-        for (x = 0; x < dst_width; x++) {
+        for (x = 0; x < copy_width; x++) {
             const unsigned char *s = src_row + x * 4;
             unsigned char *d = dst_row + x * 3;
 
-            d[0] = s[2];  /* R */
-            d[1] = s[1];  /* G */
-            d[2] = s[0];  /* B */
+            d[0] = s[2];
+            d[1] = s[1];
+            d[2] = s[0];
         }
     }
+
+    spin_lock_irqsave(&dev->in_q_slock, flags);
 
     buf->filled = frame_size;
     buf->xbar = 0;
@@ -874,13 +888,57 @@ int vcam_submit_xrgb8888_frame(struct vcam_device *dev,
     buf->jiffies = jiffies;
 
     q->ready = buf;
-    q->pending = (q->pending == &q->buffers[0]) ?
-                 &q->buffers[1] : &q->buffers[0];
+    q->pending = (buf == &q->buffers[0]) ? &q->buffers[1] : &q->buffers[0];
 
     spin_unlock_irqrestore(&dev->in_q_slock, flags);
 
-    // pr_info("my_vcam: submit XRGB8888 -> RGB24 success size=%zu\n",
-            // frame_size);
+    return 0;
+}
+
+int vcam_submit_frame(struct vcam_device *dev, const void *src, size_t size)
+{
+    struct vcam_in_queue *q;
+    struct vcam_in_buffer *buf;
+    unsigned long flags = 0;
+    size_t frame_size;
+
+    if (!dev || !src)
+        return -EINVAL;
+
+    q = &dev->in_queue;
+
+    frame_size = dev->input_format.sizeimage;
+    if (!frame_size)
+        frame_size = dev->fb_spec.width * dev->fb_spec.height * 3;
+
+    if (size > frame_size)
+        size = frame_size;
+
+    spin_lock_irqsave(&dev->in_q_slock, flags);
+
+    buf = q->pending;
+    if (!buf || !buf->data) {
+        spin_unlock_irqrestore(&dev->in_q_slock, flags);
+        return -EINVAL;
+    }
+
+    q->pending = NULL;
+
+    spin_unlock_irqrestore(&dev->in_q_slock, flags);
+
+    memcpy(buf->data, src, size);
+
+    spin_lock_irqsave(&dev->in_q_slock, flags);
+
+    buf->filled = size;
+    buf->xbar = 0;
+    buf->ybar = 0;
+    buf->jiffies = jiffies;
+
+    q->ready = buf;
+    q->pending = (buf == &q->buffers[0]) ? &q->buffers[1] : &q->buffers[0];
+
+    spin_unlock_irqrestore(&dev->in_q_slock, flags);
 
     return 0;
 }

@@ -22,6 +22,7 @@ struct drm_vcam_checksum {
 
 struct drm_vcam_submit {
     __u32 handle;
+    __u32 vcam_index;
     __u32 width;
     __u32 height;
     __u32 pitch;

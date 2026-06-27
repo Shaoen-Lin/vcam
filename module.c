@@ -52,7 +52,7 @@ MODULE_PARM_DESC(enable_fbdev, "Enable legacy fbdev input");
 //     for (i = 0; i < create_devices; i++)
 //         request_vcam_device(NULL);
 
-//     pr_info("my_vcam optimized version loaded\n");
+//     pr_info("vcam optimized version loaded\n");
 
 // failure:
 //     return ret;
@@ -69,6 +69,8 @@ static int __init vcam_init(void)
 
     for (i = 0; i < create_devices; i++)
         request_vcam_device(NULL);
+        // if (ret)
+            // goto err_drm_or_control;
 
     ret = vcam_drm_init();
     if (ret) {
@@ -76,7 +78,7 @@ static int __init vcam_init(void)
         return ret;
     }
 
-    pr_info("my_vcam optimized version loaded\n");
+    pr_info("vcam optimized version loaded\n");
     return 0;
 }
 
