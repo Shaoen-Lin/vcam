@@ -12,6 +12,7 @@ struct vcamfb_info {
     struct fb_info *info;
     void *addr;
     unsigned int offset;
+    u32 pseudo_palette[16];
     char name[FB_NAME_MAXLENGTH];
 };
 
@@ -405,7 +406,8 @@ int vcamfb_init(struct vcam_device *dev)
     info->var = vfb_default;
     info->fbops = &vcamfb_ops;
     info->par = dev;
-    info->pseudo_palette = NULL;
+    memset(fb_data->pseudo_palette, 0, sizeof(fb_data->pseudo_palette));
+    info->pseudo_palette = fb_data->pseudo_palette;
     INIT_LIST_HEAD(&info->modelist);
 
     /* set the fb_cmap */
